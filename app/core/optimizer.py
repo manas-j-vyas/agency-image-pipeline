@@ -1,45 +1,19 @@
 """
 app/core/optimizer.py
 ======================
-Responsibility: STEP 4 of the workflow — the actual image processing.
-
-For each ImageInfo NOT marked as duplicate/unsupported/skipped:
-1. Open with Pillow.
-2. Resize if width > config.max_width (maintain aspect ratio).
-3. Decide output format:
-   - If config.convert_to_webp: JPG/PNG -> WebP
-   - If PNG has alpha channel AND config.preserve_transparent_png:
-     keep RGBA mode through resize/convert (WebP supports alpha too).
-   - Otherwise keep original format but re-compress.
-4. Save into config.output_folder, mirroring the original relative
-   subfolder structure (so the agency's folder layout is preserved).
-5. Return an OptimizationResult with before/after sizes.
-
-Public API:
-
-    class Optimizer:
-        def __init__(self, config: AppConfig, logger=None): ...
-        def optimize_one(self, image: ImageInfo) -> OptimizationResult: ...
-        def optimize_batch(
-            self,
-            images: list[ImageInfo],
-            progress_callback: Callable[[int, int], None] | None = None,
-        ) -> list[OptimizationResult]: ...
-
-Design notes:
-- optimize_one() is the unit of work — easy to unit test with a single
-  file, and easy to parallelize later (e.g. ThreadPoolExecutor/
-  ProcessPoolExecutor) without rewriting logic.
-- All Pillow-specific quirks (EXIF orientation, ICC profiles, CMYK,
-  alpha handling) are isolated here so scanner/report stay format-agnostic.
-- Never overwrites the source file — always writes to config.output_folder.
+STEP 4 of the workflow: resize, compress, and optionally convert each
+image to WebP, writing results into the output folder while mirroring
+the original subfolder structure.
 """
 
 from pathlib import Path
 from typing import Callable, Optional, List
 
+from PIL import Image
+
 from app.core.models import ImageInfo, OptimizationResult
 from app.config import AppConfig
+from app.utils import file_utils
 
 
 class Optimizer:
@@ -47,12 +21,95 @@ class Optimizer:
         self.config = config
         self.logger = logger
 
-    def optimize_one(self, image: ImageInfo) -> OptimizationResult:
-        raise NotImplementedError
+    def optimize_one(self, image: ImageInfo, source_root: Path, output_root: Path) -> OptimizationResult:
+        original_size = image.size_bytes
+        try:
+            with Image.open(image.path) as img:
+                img = self._apply_exif_orientation(img)
+                has_alpha = img.mode in ("RGBA", "LA") or (
+                    img.mode == "P" and "transparency" in img.info
+                )
+
+                # Resize (maintain aspect ratio) if wider than max_width.
+                if img.width > self.config.max_width:
+                    ratio = self.config.max_width / float(img.width)
+                    new_size = (self.config.max_width, max(1, int(img.height * ratio)))
+                    img = img.resize(new_size, Image.LANCZOS)
+
+                target_dir = file_utils.ensure_output_subfolder(source_root, output_root, image.path)
+
+                convert_to_webp = self.config.convert_to_webp
+                keep_alpha = has_alpha and self.config.preserve_transparent_png
+
+                if convert_to_webp:
+                    out_path = target_dir / (image.path.stem + ".webp")
+                    save_img = img.convert("RGBA") if keep_alpha else img.convert("RGB")
+                    save_img.save(out_path, "WEBP", quality=self.config.webp_quality, method=6)
+                elif image.extension in (".jpg", ".jpeg"):
+                    out_path = target_dir / image.path.name
+                    save_img = img.convert("RGB")
+                    save_img.save(out_path, "JPEG", quality=self.config.jpg_quality, optimize=True)
+                elif image.extension == ".png":
+                    out_path = target_dir / image.path.name
+                    save_img = img if keep_alpha else img.convert("RGB")
+                    save_img.save(out_path, "PNG", optimize=True)
+                else:
+                    # Already webp or other supported type -> re-save as-is.
+                    out_path = target_dir / image.path.name
+                    img.save(out_path)
+
+            optimized_size = file_utils.get_file_size(out_path)
+            saved_bytes = max(0, original_size - optimized_size)
+            saved_percent = (saved_bytes / original_size * 100) if original_size else 0.0
+
+            if self.logger:
+                self.logger.info(
+                    f"Optimized {image.filename}: "
+                    f"{file_utils.human_readable_size(original_size)} -> "
+                    f"{file_utils.human_readable_size(optimized_size)} "
+                    f"({saved_percent:.1f}% saved)"
+                )
+
+            return OptimizationResult(
+                source=image,
+                output_path=out_path,
+                original_size_bytes=original_size,
+                optimized_size_bytes=optimized_size,
+                saved_bytes=saved_bytes,
+                saved_percent=saved_percent,
+                success=True,
+            )
+
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Failed to optimize {image.filename}: {e}")
+            return OptimizationResult(
+                source=image,
+                original_size_bytes=original_size,
+                success=False,
+                error_message=str(e),
+            )
 
     def optimize_batch(
         self,
         images: List[ImageInfo],
+        source_root: Path,
+        output_root: Path,
         progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> List[OptimizationResult]:
-        raise NotImplementedError
+        results = []
+        total = len(images)
+        output_root.mkdir(parents=True, exist_ok=True)
+        for i, image in enumerate(images, start=1):
+            results.append(self.optimize_one(image, source_root, output_root))
+            if progress_callback:
+                progress_callback(i, total)
+        return results
+
+    @staticmethod
+    def _apply_exif_orientation(img: Image.Image) -> Image.Image:
+        try:
+            from PIL import ImageOps
+            return ImageOps.exif_transpose(img)
+        except Exception:
+            return img

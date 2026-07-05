@@ -1,81 +1,115 @@
 # Agency Image Pipeline
 
-Internal agency tool for scanning, auditing, and optimizing project image
-folders (not a generic "image compressor" — it's a full audit + optimize
-pipeline with reporting).
+A production desktop application for auditing and optimizing project
+image folders — built for internal agency use. Not a generic "image
+compressor": it scans, detects duplicates/large files/unsupported
+formats, optimizes with configurable settings, and produces a report.
+
+Distributed as a **single standalone Windows .exe**. The people who use
+it never install Python, never open a terminal, and never see any code
+— they just double-click `AgencyImagePipeline.exe`.
+
+---
+
+## For the developer: building the .exe
+
+You only need to do this once per release. Requires Python 3.10+ installed
+on your Windows machine (only for building — not for running the final app).
+
+**Easiest way:** double-click `build.bat` in this folder. It will:
+1. Create a local virtual environment
+2. Install dependencies (customtkinter, Pillow, PyInstaller)
+3. Run PyInstaller using `build.spec`
+4. Open the `dist` folder containing `AgencyImagePipeline.exe`
+
+That `.exe` in `dist/` is the entire deliverable — copy it anywhere
+(a shared drive, a USB stick, another PC) and it runs standalone with
+no installation.
+
+If you'd rather run the build manually instead of double-clicking `build.bat`:
+```
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+pyinstaller build.spec --noconfirm
+```
+
+### Rebuilding after code changes
+Just re-run `build.bat` (or the manual commands above) — it overwrites
+`dist\AgencyImagePipeline.exe` with the updated build.
+
+### Customizing the icon/branding
+Replace `assets/icons/app_icon.ico` with the agency's real logo (must
+be a valid multi-size `.ico` file) before building, and it will appear
+as the exe's icon and taskbar icon.
+
+---
+
+## For the end user: running the app
+
+1. Double-click `AgencyImagePipeline.exe`
+2. Click **Browse…** and select the project image folder
+3. (Optional) choose a different output folder — defaults to
+   `optimized_output` inside the source folder
+4. Click **Start Processing**
+5. Watch the live log and progress bar
+6. When finished, view the report summary, click **Open Output Folder**
+   to grab the optimized images, or **Export Report** for an HTML report
+
+Settings (max width, quality, WebP conversion, etc.) are available via
+the **⚙ Settings** button or **File > Settings** menu, and persist
+automatically between launches.
+
+Logs are saved automatically to:
+`%APPDATA%\AgencyImagePipeline\logs\pipeline.log`
+(accessible via **File > Open Logs Folder** in the app — useful for
+troubleshooting without needing a developer involved).
+
+---
 
 ## Project Structure
 
 ```
 agency_image_pipeline/
-├── main.py                     # Entry point only — no logic
+├── main.py                     # Entry point + global crash-dialog handler
+├── build.spec                   # PyInstaller build configuration
+├── build.bat                    # One-click build script (developer use)
 ├── requirements.txt
 ├── app/
-│   ├── config.py                # AppConfig: all tunable settings
+│   ├── config.py                # AppConfig + JSON persistence (%APPDATA%)
 │   ├── gui/
-│   │   ├── main_window.py       # Main CTk window / controller
-│   │   ├── widgets.py           # StatCard, LogConsole, SettingsPanel, FolderPicker
+│   │   ├── main_window.py       # Main window / controller
+│   │   ├── dialogs.py           # Error dialog, Settings dialog, About dialog
+│   │   ├── widgets.py           # StatCard, LogConsole, FolderPicker
 │   │   └── theme.py             # Dark theme + color/font constants
 │   ├── core/
 │   │   ├── models.py            # ImageInfo, OptimizationResult, ReportData
 │   │   ├── scanner.py           # Recursive scan + format/size detection
-│   │   ├── duplicate_finder.py  # Exact (and future near-) duplicate detection
+│   │   ├── duplicate_finder.py  # Exact duplicate detection (SHA-256)
 │   │   ├── optimizer.py         # Resize / compress / WebP conversion
 │   │   ├── report_generator.py  # Aggregates scan + optimize results
-│   │   └── worker.py            # Threaded pipeline orchestration
+│   │   └── worker.py            # Background thread orchestration
 │   ├── utils/
-│   │   ├── file_utils.py        # Path/size helpers
-│   │   ├── hash_utils.py        # SHA-256 (+ future perceptual hash)
-│   │   └── logger.py            # Shared logger -> file + GUI console
+│   │   ├── file_utils.py, hash_utils.py, logger.py
 │   └── reports/
-│       ├── html_report.py       # Export ReportData -> HTML
-│       └── json_report.py       # Export ReportData -> JSON
-├── assets/                      # Icons/logo for the GUI
+│       ├── html_report.py, json_report.py
+├── assets/icons/                # App icon (.ico/.png)
 └── tests/                       # Unit tests per core module
 ```
 
-## Data Flow
+## Why it's built this way
 
-```
-User selects folder
-        │
-        ▼
-   Scanner.scan()  ──────────────► list[ImageInfo]
-        │
-        ▼
-DuplicateFinder.find_exact_duplicates()  ──► marks duplicates
-        │
-        ▼
-   Optimizer.optimize_batch()  ────────────► list[OptimizationResult]
-        │
-        ▼
-ReportGenerator.build()  ────────────────► ReportData
-        │
-        ▼
-GUI displays summary + (optional) html_report/json_report export
-```
-
-All of the above is driven by `PipelineWorker` (a background thread) so
-the CustomTkinter GUI stays responsive, communicating back to
-`main_window.py` via progress/log/complete callbacks.
-
-## Why this structure
-
-- **GUI never touches core logic directly** — only through `worker.py`.
-  This means `app/core` could be reused later as a CLI tool or batch
-  script with zero changes.
-- **Each pipeline stage is a separate, independently testable module**
-  (scan → dedupe → optimize → report), matching your 5-step workflow
-  exactly.
-- **`models.py` is the shared contract** between stages, so no module
-  passes around loose dicts/tuples.
-- **`utils/` and `reports/`** hold cross-cutting or output-only concerns,
-  kept out of core business logic.
-
-## Status
-
-This is the architecture scaffold only. Every module currently contains
-docstrings + method signatures (`raise NotImplementedError`) describing
-exactly what it will do. Next step: implement modules one at a time,
-starting with `models.py` → `scanner.py` → `duplicate_finder.py` →
-`optimizer.py` → `report_generator.py` → `worker.py` → GUI.
+- **GUI never touches core logic directly** — only through
+  `app/core/worker.PipelineWorker`, which runs on a background thread
+  via Python's `threading` module. This keeps the UI responsive on
+  large folders and is what makes the progress bar/live log possible.
+- **Every uncaught error shows a dialog**, never a silent crash —
+  critical for a windowed .exe where there's no visible console to
+  print a traceback to. Errors are also written to a log file so you
+  can debug issues the end user reports.
+- **Settings persist to `%APPDATA%`**, not next to the .exe, since a
+  double-click-installed program on a shared/locked-down machine may
+  not have write access to its own folder.
+- **Each pipeline stage is independently testable** (`scanner.py` →
+  `duplicate_finder.py` → `optimizer.py` → `report_generator.py`),
+  matching the 5-step workflow exactly.

@@ -1,34 +1,8 @@
 """
 app/core/report_generator.py
 =============================
-Responsibility: STEP 5 — aggregate everything into a ReportData object,
-and optionally export it (handled by app/reports/*.py).
-
-Input:
-- list[ImageInfo] from scanner (includes skipped/unsupported/duplicates)
-- list[OptimizationResult] from optimizer
-
-Output:
-- A single ReportData instance containing:
-    total_images, total_original_size, total_optimized_size,
-    total_saved (bytes + percent), largest_images (top N by size),
-    skipped_images, duplicate_groups, per_format_counts
-
-Public API:
-
-    class ReportGenerator:
-        def build(
-            self,
-            scanned: list[ImageInfo],
-            duplicates: list[list[ImageInfo]],
-            results: list[OptimizationResult],
-        ) -> ReportData: ...
-
-Why separate from optimizer.py:
-The optimizer's job ends once a file is processed. Aggregating stats
-and presenting them (sorting "largest images", computing totals) is a
-reporting concern — keeping it separate means report format/logic can
-change (e.g. add CSV export) without touching optimization code.
+STEP 5: aggregates scan + optimize results into a single ReportData
+object used by the GUI summary panel and (optionally) exported reports.
 """
 
 from typing import List
@@ -42,4 +16,27 @@ class ReportGenerator:
         duplicates: List[List[ImageInfo]],
         results: List[OptimizationResult],
     ) -> ReportData:
-        raise NotImplementedError
+        report = ReportData()
+
+        report.total_images = len(scanned)
+        report.skipped_images = [img for img in scanned if img.status == "unsupported"]
+        report.duplicate_groups = duplicates
+
+        successful_results = [r for r in results if r.success]
+        report.total_original_size = sum(r.original_size_bytes for r in successful_results)
+        report.total_optimized_size = sum(r.optimized_size_bytes for r in successful_results)
+        report.total_saved = report.total_original_size - report.total_optimized_size
+
+        report.largest_images = sorted(
+            [img for img in scanned if img.status != "unsupported"],
+            key=lambda i: i.size_bytes,
+            reverse=True,
+        )[:10]
+
+        per_format = {}
+        for img in scanned:
+            key = img.extension.lstrip(".").upper() or "UNKNOWN"
+            per_format[key] = per_format.get(key, 0) + 1
+        report.per_format_counts = per_format
+
+        return report

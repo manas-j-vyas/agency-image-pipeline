@@ -1,41 +1,47 @@
 """
 app/core/duplicate_finder.py
 =============================
-Responsibility: Detect duplicate images among the ImageInfo list
-produced by scanner.py.
+Detects exact (byte-identical) duplicate images among a list of
+ImageInfo produced by scanner.py.
 
-Strategy (to be implemented):
-- Fast pass: group by file size first (cheap pre-filter).
-- Exact-duplicate pass: compute a content hash (e.g. SHA-256 via
-  utils/hash_utils.py) only within same-size groups — avoids hashing
-  every file in large folders.
-- Optional future extension: perceptual hash (pHash/dHash) for
-  near-duplicate detection (resized/re-exported versions of the same
-  image). Kept as a separate method so it can be toggled on/off without
-  touching exact-duplicate logic.
-
-Public API:
-
-    class DuplicateFinder:
-        def find_exact_duplicates(self, images: list[ImageInfo]) -> list[list[ImageInfo]]:
-            '''Returns groups of ImageInfo that are byte-identical.'''
-
-        def find_near_duplicates(self, images: list[ImageInfo]) -> list[list[ImageInfo]]:
-            '''(Optional/future) perceptual-hash based grouping.'''
-
-Why separate from scanner.py:
-Duplicate detection is a distinct concern (comparison across many files)
-vs scanning (per-file classification). Keeping them apart means you can
-swap the duplicate-detection algorithm later without touching the scanner.
+Strategy: group by file size first (cheap pre-filter), then only
+compare SHA-256 hashes within same-size groups. This avoids hashing
+every single file pair in large agency folders.
 """
 
+from collections import defaultdict
 from typing import List
+
 from app.core.models import ImageInfo
 
 
 class DuplicateFinder:
     def find_exact_duplicates(self, images: List[ImageInfo]) -> List[List[ImageInfo]]:
-        raise NotImplementedError
+        by_size = defaultdict(list)
+        for img in images:
+            if img.status == "unsupported":
+                continue
+            by_size[img.size_bytes].append(img)
+
+        duplicate_groups: List[List[ImageInfo]] = []
+        for size_group in by_size.values():
+            if len(size_group) < 2:
+                continue
+            by_hash = defaultdict(list)
+            for img in size_group:
+                if img.file_hash:
+                    by_hash[img.file_hash].append(img)
+            for hash_group in by_hash.values():
+                if len(hash_group) > 1:
+                    # Keep original order stable; first item = "keeper".
+                    for img in hash_group[1:]:
+                        img.is_duplicate = True
+                    duplicate_groups.append(hash_group)
+
+        return duplicate_groups
 
     def find_near_duplicates(self, images: List[ImageInfo]) -> List[List[ImageInfo]]:
-        raise NotImplementedError
+        """Reserved for future perceptual-hash based near-duplicate
+        detection (e.g. same photo re-exported at a different size).
+        Not required for v1."""
+        return []

@@ -1,24 +1,19 @@
 """
 app/gui/theme.py
 =================
-Responsibility: Single place defining the dark theme + brand colors,
-so the whole app has a consistent professional look instead of
-scattered color codes across widgets.
-
-Contents (to be implemented):
-- apply_dark_theme(): sets customtkinter.set_appearance_mode("dark")
-  and set_default_color_theme(...)
-- COLORS dict: background, surface, accent, success, warning, error,
-  text_primary, text_secondary — used by widgets.py and main_window.py
-- FONTS dict: heading, body, monospace (for the log console)
+Single source of truth for the dark theme + brand colors/fonts, so the
+whole app has a consistent, professional look.
 """
 
 import customtkinter as ctk
 
 COLORS = {
     "background": "#1a1a1a",
-    "surface": "#242424",
+    "surface": "#232323",
+    "surface_alt": "#2b2b2b",
+    "border": "#3a3a3a",
     "accent": "#3b82f6",
+    "accent_hover": "#2563eb",
     "success": "#22c55e",
     "warning": "#eab308",
     "error": "#ef4444",
@@ -28,7 +23,9 @@ COLORS = {
 
 FONTS = {
     "heading": ("Segoe UI", 20, "bold"),
+    "subheading": ("Segoe UI", 14, "bold"),
     "body": ("Segoe UI", 13),
+    "small": ("Segoe UI", 11),
     "monospace": ("Consolas", 12),
 }
 
